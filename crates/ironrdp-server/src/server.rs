@@ -79,7 +79,7 @@ use crate::urbdrc::{
     DeviceFactory, ServerDeviceIoReq, ServerUsbDevice, UrbdrcDeviceServerMessage, UrbdrcServerMessage,
     UsbControlHandle, UsbDeviceHandle,
 };
-use crate::{RdpdrServerFactory, SoundServerFactory, builder, capabilities};
+use crate::{RdpdrRelay, RdpdrRelayFactory, RdpdrServerFactory, SoundServerFactory, builder, capabilities};
 #[cfg(feature = "usb")]
 use ironrdp_rdpeusb::{InterfaceAlloc, server::UrbdrcControlServer, server::UrbdrcDeviceServer};
 
@@ -769,6 +769,11 @@ pub struct RdpServerOptions {
     pub addr: SocketAddr,
     pub security: RdpServerSecurity,
     pub codecs: BitmapCodecs,
+    /// The surface commands the server sends, of those a client also supports. Without
+    /// `SET_SURFACE_BITS` the server sends every client bitmap updates instead. Defaults to
+    /// all of them; set via
+    /// [`RdpServerBuilder::with_surface_commands`](crate::RdpServerBuilder::with_surface_commands).
+    pub surface_commands: CmdFlags,
     pub max_request_size: u32,
     /// RemoteApp capabilities offered to clients that request RAIL.
     /// The embedder supplies the RAIL channel processor and window orders.
@@ -1336,6 +1341,7 @@ pub struct RdpServer {
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
     rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
+    rdpdr_relay_factory: Option<Box<dyn RdpdrRelayFactory>>,
     rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
     echo_handle: EchoServerHandle,
     #[cfg(feature = "egfx")]
@@ -1621,6 +1627,8 @@ pub enum ServerEvent {
     StaticChannelJoined(ChannelName, oneshot::Sender<bool>),
     Rdpsnd(RdpsndServerMessage),
     Rdpdr(RdpdrServerMessage),
+    /// One message of a relayed device redirection channel ([`RdpdrRelay`]), to send the client.
+    RdpdrRelay(Vec<u8>),
     Rdpeai(RdpeaiServerMessage),
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
@@ -1662,6 +1670,7 @@ impl fmt::Debug for ServerEvent {
             Self::StaticChannelJoined(name, _) => f.debug_tuple("StaticChannelJoined").field(&name.as_str()).finish(),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
+            Self::RdpdrRelay(..) => f.write_str("RdpdrRelay(..)"),
             Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
             Self::Echo(..) => f.write_str("Echo(..)"),
             Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
@@ -2476,6 +2485,7 @@ impl RdpServer {
             cliprdr_factory,
             rdpei_factory,
             rdpdr_factory,
+            rdpdr_relay_factory: None,
             rdpeai_factory,
             echo_handle: EchoServerHandle::new(ev_sender.clone()),
             #[cfg(feature = "egfx")]
@@ -2869,6 +2879,15 @@ impl RdpServer {
         self.connection_binder = binder;
     }
 
+    /// Relays the client's device redirection channel through `factory` in place of the
+    /// [`RdpdrServerFactory`]'s server; [`ServerEvent::RdpdrRelay`] sends the client its messages.
+    pub fn set_rdpdr_relay_factory(&mut self, mut factory: Option<Box<dyn RdpdrRelayFactory>>) {
+        if let Some(factory) = factory.as_mut() {
+            factory.set_sender(self.ev_sender.clone());
+        }
+        self.rdpdr_relay_factory = factory;
+    }
+
     fn install_bound_connection(&mut self, bound: BoundConnection) {
         let mut display = self.bound_display.lock().expect("bound display lock poisoned");
         display.clear();
@@ -2966,10 +2985,18 @@ impl RdpServer {
             acceptor.attach_static_channel(RdpsndServer::new(backend));
         }
 
-        if let Some(factory) = self.rdpdr_factory.as_deref() {
+        if let Some(factory) = self.rdpdr_relay_factory.as_deref() {
+            acceptor.attach_static_channel(RdpdrRelay::new(factory.build_handler()));
+        } else if let Some(factory) = self.rdpdr_factory.as_deref() {
             let backend = factory.build_backend();
+            let rdpdr = RdpdrServer::new(backend);
+            let rdpdr = if factory.serve_printers() {
+                rdpdr.with_printers()
+            } else {
+                rdpdr
+            };
 
-            acceptor.attach_static_channel(RdpdrServer::new(backend));
+            acceptor.attach_static_channel(rdpdr);
         }
 
         let dvc = dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler {
@@ -4366,6 +4393,18 @@ impl RdpServer {
                         .await
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
+                ServerEvent::RdpdrRelay(message) => {
+                    let Some(channel_id) = conn.get_channel_id_by_type::<RdpdrRelay>() else {
+                        warn!("No relayed device redirection channel, dropping a message");
+                        continue;
+                    };
+                    let data = server_encode_svc_messages(RdpdrRelay::relay(message), channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|e| ServerError::io("write_all", e))?;
+                }
                 ServerEvent::Rdpeai(msg) => {
                     let Some(drdynvc) = conn.get_svc_processor::<dvc::DrdynvcServer>() else {
                         warn!("No drdynvc channel, dropping AUDIO_INPUT event");
@@ -5691,7 +5730,7 @@ impl RdpServer {
                     }
                 }
                 CapabilitySet::SurfaceCommands(c) => {
-                    surface_flags = c.flags;
+                    surface_flags = c.flags & self.opts.surface_commands;
                 }
                 CapabilitySet::BitmapCodecs(BitmapCodecs(codecs)) => {
                     // FIXME: The encoder operates in image mode only.
@@ -6831,6 +6870,7 @@ mod preempt_tests {
                 addr: (Ipv4Addr::LOCALHOST, 0).into(),
                 security: RdpServerSecurity::None,
                 codecs: BitmapCodecs(Vec::new()),
+                surface_commands: CmdFlags::all(),
                 max_request_size: 8 * 1024 * 1024,
                 honor_client_desktop_size: None,
                 connection_policy: ConnectionPolicy::Preempt,
