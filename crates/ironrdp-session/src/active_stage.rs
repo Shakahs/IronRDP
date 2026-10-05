@@ -11,6 +11,7 @@ use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
+use ironrdp_pdu::rdp::session_info::SaveSessionInfoPdu;
 use ironrdp_pdu::slow_path::{self, GraphicsUpdateType};
 use ironrdp_pdu::{Action, mcs};
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
@@ -124,15 +125,19 @@ impl ActiveStage {
             return Ok(Vec::new());
         }
 
-        // Mouse move events are prevalent, so we can preallocate space for
-        // response frame + graphics update
-        let mut output = Vec::with_capacity(2);
+        // A fast-path input PDU carries at most 255 events (numEvents is a byte).
+        const MAX_EVENTS_PER_FRAME: usize = 255;
 
-        // Encoding fastpath response frame
-        // PERF: unnecessary copy
-        let fastpath_input = FastPathInput::new(events.to_vec()).map_err(SessionError::decode)?;
-        let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
-        output.push(ActiveStageOutput::ResponseFrame(frame));
+        // Mouse move events are prevalent, so we can preallocate space for
+        // response frames + graphics update.
+        let mut output = Vec::with_capacity(events.len().div_ceil(MAX_EVENTS_PER_FRAME) + 1);
+
+        for event_chunk in events.chunks(MAX_EVENTS_PER_FRAME) {
+            // PERF: unnecessary copy
+            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
+            let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
+            output.push(ActiveStageOutput::ResponseFrame(frame));
+        }
 
         // If pointer rendering is disabled - we can skip the rest
         if !self.enable_server_pointer {
@@ -225,14 +230,22 @@ impl ActiveStage {
         Ok(stage_outputs)
     }
 
-    pub fn set_fastpath_processor(&mut self, processor: fast_path::Processor) {
+    /// Replaces the fast-path processor, as a Deactivation-Reactivation does: the server's
+    /// codec state, such as the QOIZ zstd stream, starts again with the new activation. The
+    /// bulk compression history is the connection's, so it carries over to the new processor
+    /// unless that brings its own.
+    pub fn set_fastpath_processor(&mut self, mut processor: fast_path::Processor) {
+        if processor.bulk_decompressor.is_none() {
+            processor.bulk_decompressor = self.fast_path_processor.bulk_decompressor.take();
+        }
         self.fast_path_processor = processor;
     }
 
-    /// Updates the share_id used by the x224 processor for encoding ShareDataPdu.
+    /// Updates the share_id used when encoding slow-path responses and fast-path frame acknowledgements.
     /// Must be called during Deactivation-Reactivation if the server assigns a new share_id.
     pub fn set_share_id(&mut self, share_id: u32) {
         self.x224_processor.set_share_id(share_id);
+        self.fast_path_processor.set_share_id(share_id);
     }
 
     pub fn set_enable_server_pointer(&mut self, enable_server_pointer: bool) {
@@ -369,6 +382,10 @@ pub enum ActiveStageOutput {
     ///
     /// [\[MS-RDPBCGR\] 2.2.14.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/228ffc5c-b60c-4d3e-9781-ac613f822fdf
     AutoDetect(AutoDetectRequest),
+    /// The server reported that the session logged on ([MS-RDPBCGR] 2.2.10.1). Before this
+    /// arrives the session is at the target's own sign-in screen; the PDU optionally names
+    /// the account that was logged on.
+    SaveSessionInfo(SaveSessionInfoPdu),
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
@@ -392,6 +409,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
             x224::ProcessorOutput::DeactivateAll => Ok(Self::DeactivateAll),
             x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
             x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),
+            x224::ProcessorOutput::SaveSessionInfo(pdu) => Ok(Self::SaveSessionInfo(pdu)),
             // GraphicsUpdate and PointerUpdate are consumed in ActiveStage::process()
             // before reaching this conversion.
             x224::ProcessorOutput::GraphicsUpdate(_) | x224::ProcessorOutput::PointerUpdate(_) => Err(

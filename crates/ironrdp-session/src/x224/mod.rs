@@ -5,6 +5,7 @@ use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDete
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_pdu::rdp::session_info::SaveSessionInfoPdu;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages};
 use tracing::debug;
@@ -45,6 +46,10 @@ pub enum ProcessorOutput {
     /// Slow-path pointer update ([MS-RDPBCGR] 2.2.9.1.1.4).
     /// Raw pointer payload starting with `messageType(u16) + pad(u16)`.
     PointerUpdate(Vec<u8>),
+    /// Server Save Session Info PDU ([MS-RDPBCGR] 2.2.10.1): the server reporting that the
+    /// session has logged on, optionally naming the account it logged on as. Until it
+    /// arrives, the session is sitting at the target's own sign-in screen.
+    SaveSessionInfo(SaveSessionInfoPdu),
 }
 
 #[derive(Debug, Clone)]
@@ -126,8 +131,23 @@ impl Processor {
     /// Processes a received PDU. Returns a vector of [`ProcessorOutput`] that must be processed
     /// in the returned order.
     pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<ProcessorOutput>> {
-        let data_ctx: SendDataIndicationCtx<'_> =
-            ironrdp_pdu::mcs::decode_send_data_indication(frame).map_err(SessionError::decode)?;
+        let data_ctx: SendDataIndicationCtx<'_> = match ironrdp_pdu::mcs::decode_send_data_indication(frame) {
+            Ok(data_ctx) => data_ctx,
+            Err(error) => {
+                // Some servers (xrdp) end the session with a plain MCS Disconnect Provider Ultimatum.
+                if let Ok(X224(McsMessage::DisconnectProviderUltimatum(ultimatum))) =
+                    decode::<X224<McsMessage<'_>>>(frame)
+                {
+                    debug!(reason = ?ultimatum.reason, "Received Disconnect Provider Ultimatum, session will be closed");
+
+                    return Ok(vec![ProcessorOutput::Disconnect(DisconnectDescription::McsDisconnect(
+                        ultimatum.reason,
+                    ))]);
+                }
+
+                return Err(SessionError::decode(error));
+            }
+        };
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
@@ -146,6 +166,35 @@ impl Processor {
     fn process_io_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
 
+        let Some((first_pdu, mut remaining)) = split_share_control_pdu(data_ctx.user_data)? else {
+            return self.process_single_io_channel(data_ctx);
+        };
+
+        let mut outputs = self.process_single_io_channel(SendDataIndicationCtx {
+            user_data: first_pdu,
+            ..data_ctx
+        })?;
+
+        while !remaining.is_empty() {
+            let Some((pdu, rest)) = split_share_control_pdu(remaining)? else {
+                return Err(reason_err!(
+                    "IO channel",
+                    "non-Share Control data follows a Share Control PDU"
+                ));
+            };
+            outputs.extend(self.process_single_io_channel(SendDataIndicationCtx {
+                user_data: pdu,
+                ..data_ctx
+            })?);
+            remaining = rest;
+        }
+
+        Ok(outputs)
+    }
+
+    fn process_single_io_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
+        debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
+
         let io_channel = ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx).map_err(SessionError::decode)?;
 
         match io_channel {
@@ -153,7 +202,7 @@ impl Processor {
                 match ctx.pdu {
                     ShareDataPdu::SaveSessionInfo(session_info) => {
                         debug!("Got Session Save Info PDU: {session_info:?}");
-                        Ok(Vec::new())
+                        Ok(vec![ProcessorOutput::SaveSessionInfo(session_info)])
                     }
                     // FIXME: workaround fix to not terminate the session on "unhandled PDU: Set Keyboard Indicators PDU"
                     ShareDataPdu::SetKeyboardIndicators(data) => {
@@ -277,6 +326,55 @@ impl Processor {
         .map_err(SessionError::encode)?;
         Ok(written)
     }
+}
+
+/// Splits the first Share Control PDU from an MCS I/O-channel payload.
+///
+/// Enhanced-security servers may concatenate several Share Control PDUs in one
+/// `SendDataIndication`. The `totalLength` field delimits each PDU. A payload that does
+/// not begin with a Share Control header is left intact for alternate I/O-channel
+/// formats such as a Basic Security Header carrying a multitransport request.
+fn split_share_control_pdu(data: &[u8]) -> SessionResult<Option<(&[u8], &[u8])>> {
+    const HEADER_PREFIX_SIZE: usize = 4;
+    const SHARE_CONTROL_HEADER_SIZE: usize = 6;
+    const SHARE_CONTROL_TYPE_MASK: u16 = 0x000f;
+    const SHARE_CONTROL_VERSION: u16 = 0x0010;
+
+    let Some(prefix) = data.get(..HEADER_PREFIX_SIZE) else {
+        return Ok(None);
+    };
+    let mut header = [0_u8; HEADER_PREFIX_SIZE];
+    header.copy_from_slice(prefix);
+    let [length_lo, length_hi, type_lo, type_hi] = header;
+
+    let pdu_type_with_version = u16::from_le_bytes([type_lo, type_hi]);
+    let pdu_type = pdu_type_with_version & SHARE_CONTROL_TYPE_MASK;
+    let version = pdu_type_with_version & !SHARE_CONTROL_TYPE_MASK;
+    let is_share_control = version == SHARE_CONTROL_VERSION && matches!(pdu_type, 1 | 3 | 6 | 7 | 10);
+    if !is_share_control {
+        return Ok(None);
+    }
+
+    let length = usize::from(u16::from_le_bytes([length_lo, length_hi]));
+    if length < SHARE_CONTROL_HEADER_SIZE {
+        return Err(reason_err!("IO channel", "invalid Share Control PDU length: {length}"));
+    }
+
+    let pdu = data.get(..length).ok_or_else(|| {
+        reason_err!(
+            "IO channel",
+            "Share Control PDU length {length} exceeds remaining MCS payload length {}",
+            data.len()
+        )
+    })?;
+    let remaining = data.get(length..).ok_or_else(|| {
+        reason_err!(
+            "IO channel",
+            "failed to advance past Share Control PDU of length {length}"
+        )
+    })?;
+
+    Ok(Some((pdu, remaining)))
 }
 
 /// Processes a vector of [`SvcMessage`] in preparation for sending them to the server on the `channel_id` channel.
