@@ -741,12 +741,12 @@ impl BitmapUpdateHandler for RemoteFxHandler {
         let len = loop {
             match self
                 .remotefx
-                .encode(bitmap, buffer.as_mut_slice(), self.desktop_size.take())
+                .encode(bitmap, buffer.as_mut_slice(), self.desktop_size)
             {
                 Err(e) => match e.kind() {
                     ironrdp_core::EncodeErrorKind::NotEnoughBytes { .. } => {
                         buffer.resize(buffer.len() * 2, 0);
-                        debug!("encoder buffer resized to: {}", buffer.len() * 2);
+                        debug!("encoder buffer resized to: {}", buffer.len());
                     }
                     _ => return Err(ServerError::encode(e)).with_context("RemoteFX encode error"),
                 },
@@ -754,7 +754,15 @@ impl BitmapUpdateHandler for RemoteFxHandler {
             }
         };
 
-        set_surface(bitmap, self.codec_id, &buffer[..len])
+        let fragmenter = set_surface(bitmap, self.codec_id, &buffer[..len])?;
+        // The RFX header blocks ride the first message only, and `desktop_size` being `Some`
+        // is what emits them. It may only be cleared once a message carrying them is built:
+        // an encode that overruns `buffer` (any tile-padded rect that compresses larger than
+        // its raw size) is retried, and a retry that no longer sees them leaves the stream
+        // without a header it can never send again — every later frame is then rejected by
+        // the client for the life of the connection.
+        self.desktop_size = None;
+        Ok(fragmenter)
     }
 }
 

@@ -2,7 +2,7 @@ use core::net::SocketAddr;
 use std::sync::Arc;
 
 use ironrdp_pdu::codecs::rfx::Quant;
-use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, EntropyBits, server_codecs_capabilities};
+use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CmdFlags, EntropyBits, server_codecs_capabilities};
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use tokio_rustls::TlsAcceptor;
 
@@ -19,8 +19,8 @@ use crate::error::ServerResult;
 #[cfg(feature = "usb")]
 use crate::urbdrc::DeviceFactory;
 use crate::{
-    DisplayUpdate, RdpServerDisplayUpdates, RdpdrServerFactory, RdpeaiServerFactory, RdpeiServerFactory,
-    SoundServerFactory,
+    DisplayUpdate, RdpServerDisplayUpdates, RdpdrRelayFactory, RdpdrServerFactory, RdpeaiServerFactory,
+    RdpeiServerFactory, SoundServerFactory,
 };
 
 pub struct WantsAddr {}
@@ -40,6 +40,7 @@ pub struct BuilderDone {
     addr: SocketAddr,
     security: RdpServerSecurity,
     codecs: BitmapCodecs,
+    surface_commands: CmdFlags,
     max_request_size: u32,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
@@ -48,6 +49,7 @@ pub struct BuilderDone {
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
     rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>,
+    rdpdr_relay_factory: Option<Box<dyn RdpdrRelayFactory>>,
     rdpeai_factory: Option<Box<dyn RdpeaiServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
@@ -159,11 +161,13 @@ impl RdpServerBuilder<WantsDisplay> {
                 cliprdr_factory: None,
                 rdpei_factory: None,
                 rdpdr_factory: None,
+                rdpdr_relay_factory: None,
                 rdpeai_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 connection_binder: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
+                surface_commands: CmdFlags::all(),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
@@ -193,11 +197,13 @@ impl RdpServerBuilder<WantsDisplay> {
                 cliprdr_factory: None,
                 rdpei_factory: None,
                 rdpdr_factory: None,
+                rdpdr_relay_factory: None,
                 rdpeai_factory: None,
                 connection_handler: None,
                 credential_validator: None,
                 connection_binder: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
+                surface_commands: CmdFlags::all(),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
@@ -240,6 +246,22 @@ impl RdpServerBuilder<BuilderDone> {
 
     pub fn with_rdpdr_factory(mut self, rdpdr_factory: Option<Box<dyn RdpdrServerFactory>>) -> Self {
         self.state.rdpdr_factory = rdpdr_factory;
+        self
+    }
+
+    /// Relay the client's device redirection channel ([MS-RDPEFS]) instead of serving it: see
+    /// [`RdpdrRelay`](crate::RdpdrRelay). Takes the place of [`Self::with_rdpdr_factory`].
+    ///
+    /// [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
+    pub fn with_rdpdr_relay_factory(mut self, rdpdr_relay_factory: Option<Box<dyn RdpdrRelayFactory>>) -> Self {
+        self.state.rdpdr_relay_factory = rdpdr_relay_factory;
+        self
+    }
+
+    /// Sets the surface commands the server advertises and sends; see
+    /// [`RdpServerOptions::surface_commands`]. Defaults to all of them.
+    pub fn with_surface_commands(mut self, surface_commands: CmdFlags) -> Self {
+        self.state.surface_commands = surface_commands;
         self
     }
 
@@ -463,6 +485,7 @@ impl RdpServerBuilder<BuilderDone> {
                 addr: self.state.addr,
                 security: self.state.security,
                 codecs: self.state.codecs,
+                surface_commands: self.state.surface_commands,
                 max_request_size: self.state.max_request_size,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
                 connection_policy: self.state.connection_policy,
@@ -488,6 +511,7 @@ impl RdpServerBuilder<BuilderDone> {
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
         server.set_auto_reconnect_on_request(self.state.auto_reconnect_on_request);
         server.set_connection_binder(self.state.connection_binder);
+        server.set_rdpdr_relay_factory(self.state.rdpdr_relay_factory);
         server
     }
 }
