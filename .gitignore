@@ -6,7 +6,6 @@
 
 # The BUILD files Bazel's crate_universe writes into path dependencies
 /crates/*/BUILD.bazel
-/ironrdp/BUILD.bazel
 
 # Log files
 *.log
