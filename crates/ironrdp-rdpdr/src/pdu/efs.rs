@@ -2638,18 +2638,30 @@ impl DeviceCreateRequest {
         dst.write_u32(self.shared_access.bits());
         dst.write_u32(self.create_disposition.into());
         dst.write_u32(self.create_options.bits());
-        // Round-trips through decode's from_utf16_bytes(..).trim_end_matches('\0'), so the
-        // written PathLength must include the null terminator decode expects to trim.
-        dst.write_u32(cast_length!(
-            "DeviceCreateRequest",
-            "path_length",
-            encoded_str_len(&self.path, CharacterSet::Unicode, true)
-        )?);
-        write_string_to_cursor(dst, &self.path, CharacterSet::Unicode, true)
+        // Round-trips through decode's from_utf16_bytes(..).trim_end_matches('\0'), so a written
+        // path's PathLength includes the null terminator decode expects to trim. No path is
+        // written as none at all, PathLength 0, as Windows opens a printer: a client serving
+        // printers refuses a create of one that names a path, and an empty one with its
+        // terminator is two bytes of path.
+        dst.write_u32(cast_length!("DeviceCreateRequest", "path_length", self.path_size())?);
+        if self.path.is_empty() {
+            Ok(())
+        } else {
+            write_string_to_cursor(dst, &self.path, CharacterSet::Unicode, true)
+        }
     }
 
     pub fn size(&self) -> usize {
-        self.device_io_request.size() + Self::FIXED_PART_SIZE + encoded_str_len(&self.path, CharacterSet::Unicode, true)
+        self.device_io_request.size() + Self::FIXED_PART_SIZE + self.path_size()
+    }
+
+    /// The bytes the path takes: none for no path, else the path and its terminator.
+    fn path_size(&self) -> usize {
+        if self.path.is_empty() {
+            0
+        } else {
+            encoded_str_len(&self.path, CharacterSet::Unicode, true)
+        }
     }
 }
 
