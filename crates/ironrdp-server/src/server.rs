@@ -237,6 +237,10 @@ pub struct RdpServerOptions {
     /// Deactivation-Reactivation resize. Defaults to `false`. Set via
     /// [`RdpServerBuilder::with_honor_client_desktop_size`](crate::RdpServerBuilder::with_honor_client_desktop_size).
     pub honor_client_desktop_size: bool,
+    /// Whether the server opens the Display Control dynamic virtual channel, through which a
+    /// client asks for a new layout. Defaults to `true`; cleared via
+    /// [`RdpServerBuilder::with_no_display_control`](crate::RdpServerBuilder::with_no_display_control).
+    pub display_control: bool,
 }
 
 impl RdpServerOptions {
@@ -702,12 +706,15 @@ impl RdpServer {
             None => {}
         }
 
-        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
-        let dvc = dvc::DrdynvcServer::new()
-            .with_dynamic_channel(AInputHandler {
-                handler: Arc::clone(&self.handler),
-            })
-            .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+        let dvc = dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler {
+            handler: Arc::clone(&self.handler),
+        });
+        let dvc = if self.opts.display_control {
+            let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
+            dvc.with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)))
+        } else {
+            dvc
+        };
 
         let dvc = {
             let echo_handle = self.echo_handle.clone();
