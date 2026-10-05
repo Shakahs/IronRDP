@@ -16,6 +16,7 @@ mod encoder;
 #[cfg(feature = "egfx")]
 mod gfx;
 mod handler;
+mod rdpdr;
 #[cfg(feature = "helper")]
 mod helper;
 mod server;
@@ -30,6 +31,10 @@ pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoSe
 #[cfg(feature = "egfx")]
 pub use gfx::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle};
 pub use handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
+pub use rdpdr::{
+    DeviceRedirection, NoopRdpdrServerBackend, RdpdrRelay, RdpdrRelayFactory, RdpdrRelayHandler, RdpdrServer,
+    RdpdrServerBackend, RdpdrServerFactory, RdpdrServerMessage,
+};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
 pub use server::{

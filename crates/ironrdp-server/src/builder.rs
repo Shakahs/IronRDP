@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 
 use anyhow::Result;
-use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, server_codecs_capabilities};
+use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CmdFlags, server_codecs_capabilities};
 use tokio_rustls::TlsAcceptor;
 
 use super::clipboard::CliprdrServerFactory;
@@ -12,7 +12,7 @@ use super::display::{DesktopSize, RdpServerDisplay};
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{ConnectionHandler, CredentialValidator, RdpServer, RdpServerOptions, RdpServerSecurity};
-use crate::{DisplayUpdate, RdpServerDisplayUpdates, SoundServerFactory};
+use crate::{DeviceRedirection, DisplayUpdate, RdpServerDisplayUpdates, SoundServerFactory};
 
 pub struct WantsAddr {}
 pub struct WantsSecurity {
@@ -31,10 +31,12 @@ pub struct BuilderDone {
     addr: SocketAddr,
     security: RdpServerSecurity,
     codecs: BitmapCodecs,
+    surface_commands: CmdFlags,
     max_request_size: u32,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+    device_redirection: Option<DeviceRedirection>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     connection_handler: Option<Box<dyn ConnectionHandler>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
@@ -43,6 +45,7 @@ pub struct BuilderDone {
     display_suppressed: Option<Arc<AtomicBool>>,
     autodetect_rtt: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: bool,
+    display_control: bool,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -135,15 +138,18 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(display),
                 sound_factory: None,
                 cliprdr_factory: None,
+                device_redirection: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
+                surface_commands: CmdFlags::all(),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
                 display_suppressed: None,
                 autodetect_rtt: None,
                 honor_client_desktop_size: false,
+                display_control: true,
             },
         }
     }
@@ -157,15 +163,18 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(NoopDisplay),
                 sound_factory: None,
                 cliprdr_factory: None,
+                device_redirection: None,
                 connection_handler: None,
                 credential_validator: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
+                surface_commands: CmdFlags::all(),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
                 display_suppressed: None,
                 autodetect_rtt: None,
                 honor_client_desktop_size: false,
+                display_control: true,
             },
         }
     }
@@ -174,6 +183,14 @@ impl RdpServerBuilder<WantsDisplay> {
 impl RdpServerBuilder<BuilderDone> {
     pub fn with_cliprdr_factory(mut self, cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>) -> Self {
         self.state.cliprdr_factory = cliprdr_factory;
+        self
+    }
+
+    /// Serve device redirection ([MS-RDPEFS]) as `device_redirection` says.
+    ///
+    /// [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
+    pub fn with_device_redirection(mut self, device_redirection: Option<DeviceRedirection>) -> Self {
+        self.state.device_redirection = device_redirection;
         self
     }
 
@@ -191,6 +208,13 @@ impl RdpServerBuilder<BuilderDone> {
 
     pub fn with_bitmap_codecs(mut self, codecs: BitmapCodecs) -> Self {
         self.state.codecs = codecs;
+        self
+    }
+
+    /// Sets the surface commands the server advertises and sends; see
+    /// [`RdpServerOptions::surface_commands`]. Defaults to all of them.
+    pub fn with_surface_commands(mut self, surface_commands: CmdFlags) -> Self {
+        self.state.surface_commands = surface_commands;
         self
     }
 
@@ -263,6 +287,15 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Serve without the Display Control dynamic virtual channel ([MS-RDPEDISP]), as a host
+    /// older than RDP 8.1 does, so a client can't ask for a new layout mid-session.
+    ///
+    /// [MS-RDPEDISP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
+    pub fn with_no_display_control(mut self) -> Self {
+        self.state.display_control = false;
+        self
+    }
+
     /// Set a credential validator for TLS-mode connections.
     ///
     /// When set, credentials received from the client during
@@ -295,8 +328,10 @@ impl RdpServerBuilder<BuilderDone> {
                 addr: self.state.addr,
                 security: self.state.security,
                 codecs: self.state.codecs,
+                surface_commands: self.state.surface_commands,
                 max_request_size: self.state.max_request_size,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
+                display_control: self.state.display_control,
             },
             self.state.handler,
             self.state.display,
@@ -309,6 +344,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.autodetect_rtt,
         );
         server.set_credential_validator(self.state.credential_validator);
+        server.set_device_redirection(self.state.device_redirection);
         server
     }
 }
