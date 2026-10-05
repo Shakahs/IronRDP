@@ -441,6 +441,8 @@ pub struct RdpdrServer {
     devices: HashMap<u32, DeviceAnnounceHeader>,
     pending_irps: IrpTracker,
     backend: Box<dyn RdpdrServerBackend>,
+    /// Whether the server serves printers ([`Self::with_printers`]).
+    printers: bool,
 }
 
 impl_as_any!(RdpdrServer);
@@ -495,7 +497,21 @@ impl RdpdrServer {
             devices: HashMap::new(),
             pending_irps: IrpTracker::new(),
             backend,
+            printers: false,
         }
+    }
+
+    /// Serves printers as well as drives: advertises the printer capability set, and tells the
+    /// client its user logged on once the capability exchange completes. A client announces
+    /// printers only to a server that advertised the capability, and, to a server of protocol
+    /// version 1.2 or later, only once its user logged on ([MS-RDPEFS] 3.1.5.1.6); a server
+    /// that serves a client once its session is authenticated has no later logon to wait for.
+    ///
+    /// [MS-RDPEFS]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
+    #[must_use]
+    pub fn with_printers(mut self) -> Self {
+        self.printers = true;
+        self
     }
 
     pub fn downcast_backend<T: RdpdrServerBackend>(&self) -> Option<&T> {
@@ -513,8 +529,12 @@ impl RdpdrServer {
         };
         self.backend.on_client_name(&computer_name);
 
+        let mut capabilities = vec![CapabilityMessage::new_general(0), CapabilityMessage::new_drive()];
+        if self.printers {
+            capabilities.push(CapabilityMessage::new_printer());
+        }
         let capability_request = RdpdrPdu::CoreCapability(CoreCapability {
-            capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_drive()],
+            capabilities,
             kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
         });
         let client_id_confirm = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
@@ -545,7 +565,11 @@ impl RdpdrServer {
             "received ClientCoreCapabilityResponse"
         );
         self.state = RdpdrServerState::Active;
-        Ok(Vec::new())
+        if self.printers {
+            Ok(vec![SvcMessage::from(RdpdrPdu::UserLoggedon)])
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     fn handle_device_list_announce(&mut self, src: &mut ReadCursor<'_>) -> PduResult<Vec<SvcMessage>> {
