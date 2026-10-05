@@ -4747,6 +4747,9 @@ impl RdpServer {
             .client_early_capability_flags
             .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
         if !result.reactivation {
+            // The session is logged on once the client is accepted: say so, as a Windows host
+            // does once its user logs on.
+            send_logon_notification(result.io_channel_id, result.user_channel_id, writer).await?;
             for (_channel_key, channel, channel_id) in conn.static_channels.iter_by_key_mut() {
                 debug!(?channel, ?channel_id, "Start");
                 let Some(channel_id) = channel_id else {
@@ -5564,6 +5567,27 @@ async fn deactivate_all(io_channel_id: u16, user_channel_id: u16, writer: &mut i
         .write_all(&msg)
         .await
         .map_err(|e| ServerError::io("write deactivate_all", e))?;
+    Ok(())
+}
+
+/// Send the client a Save Session Info PDU ([MS-RDPBCGR] 2.2.10.1) notifying it that the
+/// session's user has logged on (`INFOTYPE_LOGON_PLAINNOTIFY`).
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/bc3edc1d-6ad0-4cf6-b1ee-e3a2e8be3a68
+async fn send_logon_notification(
+    io_channel_id: u16,
+    user_channel_id: u16,
+    writer: &mut impl FramedWrite,
+) -> ServerResult<()> {
+    let info = rdp::headers::ShareDataPdu::SaveSessionInfo(rdp::session_info::SaveSessionInfoPdu {
+        info_type: rdp::session_info::InfoType::PlainNotify,
+        info_data: rdp::session_info::InfoData::PlainNotify,
+    });
+    let msg = encode_share_data_pdu(info, io_channel_id, io_channel_id, user_channel_id)?;
+    writer
+        .write_all(&msg)
+        .await
+        .map_err(|e| ServerError::io("send logon notification", e))?;
     Ok(())
 }
 
