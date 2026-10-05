@@ -98,7 +98,6 @@ impl CredsspSequence {
         server_name: ServerName,
         server_public_key: Vec<u8>,
         kerberos_config: Option<KerberosConfig>,
-        credentialless: bool,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
         let credentials: sspi::Credentials = match &credentials {
             Credentials::UsernamePassword { username, password } => {
@@ -159,11 +158,7 @@ impl CredsspSequence {
         let client = CredSspClient::new(
             server_public_key,
             credentials,
-            if credentialless {
-                credssp::CredSspMode::CredentialLess
-            } else {
-                credssp::CredSspMode::WithCredentials
-            },
+            credssp::CredSspMode::WithCredentials,
             client_mode,
             service_principal_name,
         )

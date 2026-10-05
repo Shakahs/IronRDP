@@ -224,10 +224,6 @@ pub struct Config {
     pub request_data: Option<NegoRequestData>,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
-    /// If true, CredSSP delegates no credentials to the server (empty TSPasswordCreds):
-    /// NLA still authenticates the connection, but the server is left with nothing to log
-    /// the session on with and presents its own logon UI instead.
-    pub credssp_credentialless: bool,
     /// If true, the INFO_NOAUDIOPLAYBACK flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub enable_audio_playback: bool,
     pub performance_flags: PerformanceFlags,

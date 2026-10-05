@@ -138,7 +138,6 @@ where
         server_name,
         server_public_key,
         kerberos_config,
-        connector.config.credssp_credentialless,
     )?;
 
     loop {
