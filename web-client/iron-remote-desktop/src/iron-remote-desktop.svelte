@@ -18,6 +18,7 @@
     import { loggingService } from './services/logging.service';
     import { RemoteDesktopService } from './services/remote-desktop.service';
     import type { ResizeEvent } from './interfaces/ResizeEvent';
+    import type { ReadyEventDetail } from './interfaces/ReadyEvent';
     import { PublicAPI } from './services/PublicAPI';
     import { ScreenScale } from './enums/ScreenScale';
     import type { RemoteDesktopModule } from './interfaces/RemoteDesktopModule';
@@ -310,7 +311,7 @@
     // Tells the host the component can connect. Only after the clipboard is set up too: connect() only opens the
     // clipboard channel when the clipboard callbacks are registered by then.
     function dispatchReady() {
-        let result = { irgUserInteraction: publicAPI.getExposedFunctions() };
+        let result: ReadyEventDetail = { irgUserInteraction: publicAPI.getExposedFunctions() };
 
         loggingService.info('Component ready');
         loggingService.info('Dispatching ready event');
