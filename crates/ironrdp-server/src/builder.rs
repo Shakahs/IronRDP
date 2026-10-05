@@ -45,7 +45,6 @@ pub struct BuilderDone {
     display_suppressed: Option<Arc<AtomicBool>>,
     autodetect_rtt: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: bool,
-    display_control: bool,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -149,7 +148,6 @@ impl RdpServerBuilder<WantsDisplay> {
                 display_suppressed: None,
                 autodetect_rtt: None,
                 honor_client_desktop_size: false,
-                display_control: true,
             },
         }
     }
@@ -174,7 +172,6 @@ impl RdpServerBuilder<WantsDisplay> {
                 display_suppressed: None,
                 autodetect_rtt: None,
                 honor_client_desktop_size: false,
-                display_control: true,
             },
         }
     }
@@ -287,15 +284,6 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    /// Serve without the Display Control dynamic virtual channel ([MS-RDPEDISP]), as a host
-    /// older than RDP 8.1 does, so a client can't ask for a new layout mid-session.
-    ///
-    /// [MS-RDPEDISP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
-    pub fn with_no_display_control(mut self) -> Self {
-        self.state.display_control = false;
-        self
-    }
-
     /// Set a credential validator for TLS-mode connections.
     ///
     /// When set, credentials received from the client during
@@ -331,7 +319,6 @@ impl RdpServerBuilder<BuilderDone> {
                 surface_commands: self.state.surface_commands,
                 max_request_size: self.state.max_request_size,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
-                display_control: self.state.display_control,
             },
             self.state.handler,
             self.state.display,
