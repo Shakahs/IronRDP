@@ -21,6 +21,7 @@ use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, C
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_pdu::rdp::session_info::{InfoData, InfoType, SaveSessionInfoPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpsnd as rdpsnd;
@@ -1517,6 +1518,9 @@ impl RdpServer {
 
         self.static_channels = result.static_channels;
         if !result.reactivation {
+            // The session is logged on once the client is accepted: say so, as a Windows host
+            // does once its user logs on.
+            send_logon_notification(result.io_channel_id, result.user_channel_id, writer).await?;
             for (_type_id, channel, channel_id) in self.static_channels.iter_mut() {
                 debug!(?channel, ?channel_id, "Start");
                 let Some(channel_id) = channel_id else {
@@ -1929,6 +1933,40 @@ async fn deactivate_all(
         share_id: 0,
         pdu_source: io_channel_id,
         share_control_pdu: pdu,
+    };
+    let user_data = encode_vec(&pdu)?.into();
+    let pdu = SendDataIndication {
+        initiator_id: user_channel_id,
+        channel_id: io_channel_id,
+        user_data,
+    };
+    let msg = encode_vec(&X224(pdu))?;
+    writer.write_all(&msg).await?;
+    Ok(())
+}
+
+/// Send the client a Save Session Info PDU ([MS-RDPBCGR] 2.2.10.1) notifying it that the
+/// session's user has logged on (`INFOTYPE_LOGON_PLAINNOTIFY`).
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/bc3edc1d-6ad0-4cf6-b1ee-e3a2e8be3a68
+async fn send_logon_notification(
+    io_channel_id: u16,
+    user_channel_id: u16,
+    writer: &mut impl FramedWrite,
+) -> Result<(), anyhow::Error> {
+    let info = rdp::headers::ShareDataPdu::SaveSessionInfo(SaveSessionInfoPdu {
+        info_type: InfoType::PlainNotify,
+        info_data: InfoData::PlainNotify,
+    });
+    let pdu = rdp::headers::ShareControlHeader {
+        share_id: 0,
+        pdu_source: io_channel_id,
+        share_control_pdu: ShareControlPdu::Data(rdp::headers::ShareDataHeader {
+            share_data_pdu: info,
+            stream_priority: rdp::headers::StreamPriority::Undefined,
+            compression_flags: rdp::headers::CompressionFlags::empty(),
+            compression_type: rdp::client_info::CompressionType::K8,
+        }),
     };
     let user_data = encode_vec(&pdu)?.into();
     let pdu = SendDataIndication {
