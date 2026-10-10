@@ -889,6 +889,9 @@ impl iron_remote_desktop::Session for Session {
 
             for out in outputs {
                 match out {
+                    ActiveStageOutput::SaveSessionInfo(_) => {
+                        // Session logon metadata is consumed by the recording proxy.
+                    }
                     ActiveStageOutput::ResponseFrame(frame) => {
                         self.writer_tx
                             .unbounded_send(frame)
