@@ -98,10 +98,9 @@ export class ClipboardService {
         //    the polling loop unusable. Downgrade to TextOnly so Firefox
         //    routes through the text-only fallback paths.
         //
-        //    When the permission query fails, a trial clipboard.read() checks
-        //    whether Firefox's `dom.events.testing.asyncClipboard` about:config
-        //    pref is active. If so, keep Full mode as clipboard works fully in
-        //    this scenario, without any user-activation restrictions.
+        //    Do not probe clipboard.read() during initialization: it can wait
+        //    for user permission, preventing the component from becoming ready.
+        //    The text-only paths read the clipboard when the user requests it.
         if (this.ClipboardApiSupported === ClipboardApiSupported.Full) {
             try {
                 const permissionStatus = await navigator.permissions.query({
@@ -112,12 +111,7 @@ export class ClipboardService {
                     this.ClipboardApiSupported = ClipboardApiSupported.TextOnly;
                 }
             } catch {
-                try {
-                    // Try to read clipboard to check if the asyncClipboard pref is enabled
-                    await navigator.clipboard.read();
-                } catch {
-                    this.ClipboardApiSupported = ClipboardApiSupported.TextOnly;
-                }
+                this.ClipboardApiSupported = ClipboardApiSupported.TextOnly;
             }
         }
 
