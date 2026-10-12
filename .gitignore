@@ -20,3 +20,6 @@
 *.ntvs*
 *.njsproj
 *.sw?
+
+# The execution log the parent Bazel workspace writes
+execution_log.binpb.zst
