@@ -45,6 +45,24 @@ export function displayControl(enable: boolean): Extension {
     return new Extension('display_control', enable);
 }
 
+/**
+ * Dial the proxy again when a running session's connection is lost, and go on drawing the
+ * session on the same canvas: at once, then 5 seconds apart while the proxy cannot be reached,
+ * 20 times at most. The new connection opens at the same proxy address with the same auth token,
+ * so the proxy must accept them again.
+ */
+export function redial(enable: boolean): Extension {
+    return new Extension('redial', enable);
+}
+
+/**
+ * Called each time the session's connection opens: once its connection sequence completes, and
+ * once each redial does. `openedAt` is when, on the page's `performance.now()` clock.
+ */
+export function connectionOpenedCallback(callback: (openedAt: number) => void): Extension {
+    return new Extension('connection_opened_callback', callback);
+}
+
 export function kdcProxyUrl(url: string): Extension {
     return new Extension('kdc_proxy_url', url);
 }
