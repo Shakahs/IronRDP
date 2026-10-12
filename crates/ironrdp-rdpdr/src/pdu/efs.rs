@@ -1331,7 +1331,7 @@ impl DeviceAnnounceHeader {
         }
     }
 
-    pub(crate) fn device_type(&self) -> DeviceType {
+    pub fn device_type(&self) -> DeviceType {
         self.device_type
     }
 
