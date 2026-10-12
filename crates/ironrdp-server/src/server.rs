@@ -50,7 +50,7 @@ use rand::RngCore as _;
 use rdpdr::server::{RdpdrServer, RdpdrServerMessage};
 use rdpeai::server::{RdpeaiServer, RdpeaiServerMessage};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
@@ -133,6 +133,18 @@ const CLIPRDR_DRIVE_TIMEOUTS_INTERVAL: Duration = Duration::from_secs(5);
 /// seconds. A false timeout is cheap — the connection is dropped and the client
 /// reconnects (immediately, if it holds an auto-reconnect cookie).
 const FINALIZE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a connection the server ends is drained once it is shut down, for the client to
+/// read what the server sent last and hang up.
+///
+/// A socket closed with data it has not read resets the connection rather than closing it
+/// ([RFC 2525] 2.17), and a client reset this way may discard what it has not yet read: a
+/// client still answering the server's last PDUs when the server ends the connection, as one
+/// whose session is refused moments after it connects is, loses the Set Error Info PDU that says
+/// why. Draining reads what the client sends until it hangs up, so the close is a FIN.
+///
+/// [RFC 2525]: https://www.rfc-editor.org/rfc/rfc2525#section-2.17
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Monotonic milliseconds since first use, for feeding the auto-detect state machine.
 ///
@@ -3091,6 +3103,12 @@ impl RdpServer {
         if let Err(e) = inner.shutdown().await {
             debug!(?e, "{} shutdown error", shutdown_label);
         }
+        // See `SHUTDOWN_DRAIN_TIMEOUT`. An error or a deadline ends it as the client hanging up does.
+        let mut discarded = [0u8; 4096];
+        let _ = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, async {
+            while let Ok(1..) = inner.read(&mut discarded).await {}
+        })
+        .await;
 
         Ok(())
     }
