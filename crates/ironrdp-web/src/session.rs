@@ -844,6 +844,10 @@ impl iron_remote_desktop::Session for Session {
         // connection.
         let mut terminating = false;
 
+        // The latest requested size survives redial and waits for the new Display Control
+        // channel's capabilities before it can be sent.
+        let mut pending_resize = None;
+
         // Each pass runs one connection of the session, until the session ends or the connection
         // is lost and dialed again.
         let disconnect_reason = 'session: loop {
@@ -1040,21 +1044,14 @@ impl iron_remote_desktop::Session for Session {
                                 active_stage.process_fastpath_input(&mut image, &events)
                                     .context("fast path input events processing")?
                             }
-                            RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
-                                debug!(width, height, scale_factor, "Resize event received");
+                            event @ RdpInputEvent::Resize { width, height, .. } => {
+                                debug!(width, height, "Resize event received");
                                 if width == 0 || height == 0 {
                                     warn!("Resize event ignored: width or height is zero");
-                                    Vec::new()
-                                } else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
-                                    let width = NonZeroU32::new(width).expect("width is guaranteed to be non-zero due to the prior check");
-                                    let height = NonZeroU32::new(height).expect("height is guaranteed to be non-zero due to the prior check");
-
-                                    requested_resize = Some((width, height));
-                                    vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                                 } else {
-                                    debug!("Resize event ignored");
-                                    Vec::new()
+                                    pending_resize = Some(event);
                                 }
+                                Vec::new()
                             },
                             RdpInputEvent::Printer(message) => {
                                 // The printer backend lives inside the Rdpdr SVC
@@ -1344,14 +1341,34 @@ impl iron_remote_desktop::Session for Session {
                         ActiveStageOutput::Terminate(reason) => break 'session reason,
                     }
                 }
+
+                if let Some(RdpInputEvent::Resize {
+                    width,
+                    height,
+                    scale_factor,
+                    physical_size,
+                }) = &pending_resize
+                {
+                    if let Some(frame) = active_stage.encode_resize(*width, *height, *scale_factor, *physical_size) {
+                        requested_resize = Some((
+                            NonZeroU32::new(*width).expect("pending resize width is non-zero"),
+                            NonZeroU32::new(*height).expect("pending resize height is non-zero"),
+                        ));
+                        self.writer_tx
+                            .borrow()
+                            .unbounded_send(frame?)
+                            .context("Send resize to writer task")?;
+                        pending_resize = None;
+                    }
+                }
             };
 
             // The connection was lost: the proxy went away, as it does when a deployment replaces
             // it, or the WebSocket was closed, as the server closes it when the access token its
             // upgrade carried expires. A session that redials opens a new one to the same address,
             // whose upgrade carries the browser's current credentials, and goes on drawing on the
-            // same canvas. What the viewer sends meanwhile reaches no desktop; a shutdown ends the
-            // session.
+            // same canvas. Keyboard and pointer input meanwhile reaches no desktop; the latest
+            // resize is kept, and a shutdown ends the session.
             if terminating {
                 break 'session GracefulDisconnectReason::UserInitiated;
             }
@@ -1370,6 +1387,9 @@ impl iron_remote_desktop::Session for Session {
                     event = input_events.next() => match event {
                         Some(RdpInputEvent::TerminateSession) | None => {
                             break 'session GracefulDisconnectReason::UserInitiated;
+                        }
+                        Some(event @ RdpInputEvent::Resize { width, height, .. }) if width != 0 && height != 0 => {
+                            pending_resize = Some(event);
                         }
                         Some(_) => {}
                     },
