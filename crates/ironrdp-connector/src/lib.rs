@@ -111,6 +111,7 @@ pub struct BitmapConfig {
     pub codecs: BitmapCodecs,
 }
 
+#[cfg(feature = "scard")]
 #[derive(Clone)]
 pub struct SmartCardIdentity {
     /// DER-encoded X509 certificate.
@@ -129,6 +130,7 @@ pub struct SmartCardIdentity {
     pub private_key: Vec<u8>,
 }
 
+#[cfg(feature = "scard")]
 impl fmt::Debug for SmartCardIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SmartCardIdentity")
@@ -149,6 +151,7 @@ pub enum Credentials {
         /// INVARIANT: `Debug` output redacts this field.
         password: String,
     },
+    #[cfg(feature = "scard")]
     SmartCard {
         /// INVARIANT: `Debug` output redacts this field.
         pin: String,
@@ -164,6 +167,7 @@ impl fmt::Debug for Credentials {
                 .field("username", username)
                 .field("password", &"<redacted>")
                 .finish(),
+            #[cfg(feature = "scard")]
             Self::SmartCard { config, .. } => f
                 .debug_struct("Credentials::SmartCard")
                 .field("pin", &"<redacted>")
@@ -174,10 +178,19 @@ impl fmt::Debug for Credentials {
 }
 
 impl Credentials {
+    fn is_smart_card(&self) -> bool {
+        match self {
+            #[cfg(feature = "scard")]
+            Self::SmartCard { .. } => true,
+            Self::UsernamePassword { .. } => false,
+        }
+    }
+
     fn username(&self) -> Option<&str> {
         match self {
             Self::UsernamePassword { username, .. } if !username.is_empty() => Some(username),
             Self::UsernamePassword { .. } => None,
+            #[cfg(feature = "scard")]
             Self::SmartCard { .. } => None, // Username is ultimately provided by the smart card certificate.
         }
     }
@@ -185,6 +198,7 @@ impl Credentials {
     fn secret(&self) -> &str {
         match self {
             Self::UsernamePassword { password, .. } => password,
+            #[cfg(feature = "scard")]
             Self::SmartCard { pin, .. } => pin,
         }
     }

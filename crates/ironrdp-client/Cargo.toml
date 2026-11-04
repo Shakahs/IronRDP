@@ -124,7 +124,7 @@ ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["alloc"]
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.11" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.10" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.10" } # public
-ironrdp-connector = { path = "../ironrdp-connector", version = "0.12" } # public
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.12", features = ["scard"] } # public
 ironrdp-session = { path = "../ironrdp-session", version = "0.13" } # public
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.11" } # public
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.10" }

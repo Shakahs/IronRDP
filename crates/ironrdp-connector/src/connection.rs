@@ -2299,7 +2299,7 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::AUTOLOGON;
     }
 
-    if !entra_auth && !remote_guard && matches!(&config.credentials, crate::Credentials::SmartCard { .. }) {
+    if !entra_auth && !remote_guard && config.credentials.is_smart_card() {
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
     }
 

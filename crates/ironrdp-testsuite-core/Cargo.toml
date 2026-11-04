@@ -47,7 +47,7 @@ ironrdp-acceptor.path = "../ironrdp-acceptor"
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-bulk.path = "../ironrdp-bulk"
-ironrdp-connector = { path = "../ironrdp-connector", features = ["__test"] }
+ironrdp-connector = { path = "../ironrdp-connector", features = ["__test", "scard"] }
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"
 ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-echo.path = "../ironrdp-echo"
